@@ -2816,6 +2816,8 @@ class OpenAIServingChat(OpenAIServingBase):
             request.skip_special_tokens = False
         elif self.reasoning_parser == "muse":
             request.skip_special_tokens = False
+        elif self.reasoning_parser == "llm-jp-harmony":
+            request.skip_special_tokens = False
 
     def supports_native_reasoning_history(self) -> bool:
         """Whether the chat encoder takes history as ``reasoning_content`` rather

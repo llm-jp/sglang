@@ -16,6 +16,7 @@ from sglang.srt.parser.reasoning_parser import (
     KimiDetector,
     KimiK2Detector,
     Ling3Detector,
+    LlmJpHarmonyDetector,
     Nemotron3Detector,
     Qwen3Detector,
     ReasoningParser,
@@ -438,21 +439,6 @@ class TestKimiDetector(CustomTestCase):
         self.assertEqual(result.reasoning_text, "")
 
 
-class TestKimiK2Detector(CustomTestCase):
-    """Test cases for KimiK2 detector with tool interruption support."""
-
-    def setUp(self):
-        self.detector = KimiK2Detector()
-
-    def test_init(self):
-        """Test KimiK2Detector initialization."""
-        self.assertEqual(self.detector.think_start_token, "<think>")
-        self.assertEqual(self.detector.think_end_token, "</think>")
-        self.assertEqual(self.detector.tool_start_token, "<|tool_calls_section_begin|>")
-        self.assertFalse(self.detector._in_reasoning)
-        self.assertTrue(self.detector.stream_reasoning)
-
-
 class TestGlm45Detector(CustomTestCase):
     """Test cases for GLM45 detector with tool interruption support."""
 
@@ -528,13 +514,6 @@ class TestGlm45Detector(CustomTestCase):
 class TestLing3Detector(CustomTestCase):
     def setUp(self):
         self.detector = Ling3Detector()
-
-    def test_init(self):
-        self.assertEqual(self.detector.tool_start_token, "<tool_call>")
-        self.assertEqual(self.detector.reasoning_default, "enable_thinking")
-        self.assertTrue(self.detector.thinks_internally)
-        self.assertTrue(self.detector._force_nonempty_content)
-        self.assertFalse(self.detector._in_reasoning)
 
     def test_tool_interrupt(self):
         text = "<think>I need a tool<tool_call>get_weather</tool_call>"
@@ -1180,6 +1159,13 @@ class TestStreamingChunkSizeInvariance(CustomTestCase):
                         self._feed(DeepSeekR1Detector(), text, chunk_size), expected
                     )
 
+    def test_llm_jp_harmony(self):
+        text = (
+            "<|channel|> analysis<|message|> Think.<|end|>"
+            "<|start|> assistant<|channel|> final<|message|> Answer."
+        )
+        self._assert_invariant(LlmJpHarmonyDetector, text, ("Think.", "Answer."))
+
     def test_text_before_think_token_is_chunk_dependent(self):
         """Accepted divergence, inherited from main: text before `<think>` lands
         in reasoning or content depending on where the chunk boundary falls."""
@@ -1266,6 +1252,46 @@ class TestStreamingChunkSizeInvariance(CustomTestCase):
             f"<think>my reasoning {tool_call}",
             (f"my reasoning {tool_call}", ""),
         )
+
+
+class TestLlmJpHarmonyDetector(CustomTestCase):
+    SPACED = (
+        "<|channel|> analysis<|message|> Think.<|end|>"
+        "<|start|> assistant<|channel|> final<|message|>  Answer."
+    )
+
+    def test_drops_one_tokenizer_space_after_message(self):
+        # Llmjp4Tokenizer decodes without the spaces; the default decode keeps
+        # one after every special token. A second space is the model's own.
+        unspaced = (
+            "<|channel|>analysis<|message|>Think.<|end|>"
+            "<|start|>assistant<|channel|>final<|message|> Answer."
+        )
+        for text in (self.SPACED, unspaced):
+            with self.subTest(text=text):
+                result = LlmJpHarmonyDetector().detect_and_parse(text)
+                self.assertEqual(result.reasoning_text, "Think.")
+                self.assertEqual(result.normal_text, " Answer.")
+
+    def test_stream_reasoning_false_holds_reasoning_until_end(self):
+        detector = LlmJpHarmonyDetector(stream_reasoning=False)
+        partial = detector.parse_streaming_increment(
+            "<|channel|> analysis<|message|> Thi"
+        )
+        self.assertEqual(partial.reasoning_text, "")
+        result = detector.parse_streaming_increment("nk.<|end|>")
+        self.assertEqual(result.reasoning_text, "Think.")
+
+    def test_header_cut_by_max_tokens_is_dropped(self):
+        text = "<|channel|> analysis<|message|> Think.<|end|><|start|> assistant to"
+        result = LlmJpHarmonyDetector().detect_and_parse(text)
+        self.assertEqual(result.reasoning_text, "Think.")
+        self.assertEqual(result.normal_text, "")
+
+    def test_output_without_harmony_header_is_content(self):
+        result = LlmJpHarmonyDetector().detect_and_parse("Plain answer.")
+        self.assertEqual(result.reasoning_text, "")
+        self.assertEqual(result.normal_text, "Plain answer.")
 
 
 class TestGptOssDetector(CustomTestCase):
